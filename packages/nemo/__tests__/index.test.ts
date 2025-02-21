@@ -1,579 +1,462 @@
-import { type NextFetchEvent, NextRequest, NextResponse } from 'next/server';
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { NextFetchEvent } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   createMiddleware,
-  forward,
-  type MiddlewareConfig,
-  type MiddlewareFunction,
-  type MiddlewareFunctionProps,
-} from '../src';
+  NEMO,
+  NemoMiddlewareError,
+  type ErrorHandler,
+  type NextMiddleware,
+} from "../src";
 
-describe('createMiddleware', () => {
-  let mockRequest = new NextRequest('http://localhost/page1');
-  let mockEvent = {} as NextFetchEvent;
-  let mockContext = new Map<string, unknown>();
+describe("NEMO", () => {
+  const mockRequest = (path: string = "/") => {
+    return new NextRequest(`http://localhost${path}`, {
+      headers: new Headers({ "x-initial": "value" }),
+    });
+  };
 
-  beforeEach(() => {
-    mockRequest = new NextRequest('http://localhost/page1');
-    mockEvent = {} as NextFetchEvent;
-    mockContext = new Map<string, unknown>();
+  const mockEvent: NextFetchEvent = {
+    waitUntil: mock(() => {}),
+  } as never as NextFetchEvent;
+
+  describe("Internals", () => {
+    let nemo: NEMO;
+
+    beforeEach(() => {
+      nemo = new NEMO({});
+    });
+
+    test("should detect new headers", () => {
+      const initial = new Headers();
+      const final = new Headers({
+        "new-header": "value",
+      });
+
+      const diff = (nemo as any).getHeadersDiff(initial, final);
+      expect(diff).toEqual({
+        "new-header": "value",
+      });
+    });
+
+    test("should detect modified headers", () => {
+      const initial = new Headers({
+        "existing-header": "old-value",
+      });
+      const final = new Headers({
+        "existing-header": "new-value",
+      });
+
+      const diff = (nemo as any).getHeadersDiff(initial, final);
+      expect(diff).toEqual({
+        "existing-header": "new-value",
+      });
+    });
+
+    test("should ignore unchanged headers", () => {
+      const initial = new Headers({
+        "unchanged-header": "same-value",
+      });
+      const final = new Headers({
+        "unchanged-header": "same-value",
+      });
+
+      const diff = (nemo as any).getHeadersDiff(initial, final);
+      expect(diff).toEqual({});
+    });
+
+    test("should detect deleted headers", () => {
+      const initial = new Headers({
+        "deleted-header": "value",
+      });
+      const final = new Headers();
+
+      const diff = (nemo as any).getHeadersDiff(initial, final);
+      expect(diff).toEqual({
+        "deleted-header": "",
+      });
+    });
+
+    test("should handle empty headers", () => {
+      const initial = new Headers();
+      const final = new Headers();
+
+      const diff = (nemo as any).getHeadersDiff(initial, final);
+      expect(diff).toEqual({});
+    });
   });
 
-  it('returns the response from the first middleware that returns a response', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-        async () => {
-          return new NextResponse('Final response');
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const response = await middleware(mockRequest, mockEvent);
-
-    expect(response).toBeInstanceOf(NextResponse);
-    expect(await response?.text()).toBe('Final response');
-  });
-
-  it('returns NextResponse.next() if no middleware returns a response', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const response = await middleware(mockRequest, mockEvent);
-
-    expect(response).toBeInstanceOf(NextResponse);
-    expect(response?.body).toBeNull();
-  });
-
-  it('executes middleware without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('handles global before and after middleware without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      before: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      after: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('matches paths correctly without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-      '/page2': [
-        async () => {
-          return new NextResponse('Page 2 response');
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-
-    await expect(
-      middleware(new NextRequest('http://localhost/page1'), mockEvent),
-    ).resolves.not.toThrow();
-
-    await expect(
-      middleware(new NextRequest('http://localhost/page2'), mockEvent),
-    ).resolves.not.toThrow();
-  });
-
-  it('executes global before middleware without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      before: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('executes global after middleware without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      after: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('returns NextResponse if no middleware matches the path', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page2': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const response = await middleware(mockRequest, mockEvent);
-
-    expect(response).toBeInstanceOf(NextResponse);
-    expect(response?.body).toBeNull();
-  });
-
-  it('handles multiple middleware functions for a single path without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('executes only global before middleware if no path matches without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page2': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      before: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('executes only global after middleware if no path matches without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page2': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      after: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('executes both global before and after middleware if no path matches without errors', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page2': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          forward(response);
-        },
-      ],
-    };
-
-    const globalMiddleware = {
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      before: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      after: async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    };
-
-    const middleware = createMiddleware(middlewareConfig, globalMiddleware);
-    await expect(middleware(mockRequest, mockEvent)).resolves.not.toThrow();
-  });
-
-  it('extracts URL params correctly', async () => {
-    const mockMiddleware = jest.fn(
-      async ({ params }: MiddlewareFunctionProps) => {
-        expect(params().id).toBe('123');
-      },
-    );
-
-    const middlewareConfig: MiddlewareConfig = {
-      '/page/:id': [mockMiddleware],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const request = new NextRequest('http://localhost/page/123');
-    await middleware(request, mockEvent);
-
-    expect(mockMiddleware).toHaveBeenCalled();
-  });
-
-  it('does not precompute params for middleware that does not use them', async () => {
-    const mockMiddleware = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    );
-
-    const middlewareConfig: MiddlewareConfig = {
-      '/page/:id': [mockMiddleware],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const request = new NextRequest('http://localhost/page/123');
-    await middleware(request, mockEvent);
-
-    expect(mockMiddleware).toHaveBeenCalled();
-    expect(mockMiddleware.mock.calls[0][0].params).toBeInstanceOf(Function);
-  });
-
-  it('sets cookies from response to request', async () => {
-    const mockMiddleware = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        response.cookies.set('test-cookie', 'test-value');
-        forward(response);
-      },
-    );
-
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [mockMiddleware],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    await middleware(mockRequest, mockEvent);
-
-    expect(mockMiddleware).toHaveBeenCalled();
-    expect(mockRequest.cookies.get('test-cookie')?.name).toBe('test-cookie');
-    expect(mockRequest.cookies.get('test-cookie')?.value).toBe('test-value');
-  });
-
-  it('executes middleware functions based on pattern', async () => {
-    const mockMiddleware1 = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    );
-
-    const mockMiddleware2 = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = new NextResponse('Pattern matched');
-        forward(response);
-      },
-    );
-
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [mockMiddleware1],
-      '/page2': [mockMiddleware2],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-
-    // Test for pattern '/page1'
-    await middleware(new NextRequest('http://localhost/page1'), mockEvent);
-    expect(mockMiddleware1).toHaveBeenCalled();
-    expect(mockMiddleware2).not.toHaveBeenCalled();
-
-    // Test for pattern '/page2'
-    await middleware(new NextRequest('http://localhost/page2'), mockEvent);
-    expect(mockMiddleware2).toHaveBeenCalled();
-  });
-
-  it('handles both array and single middleware functions correctly', async () => {
-    const mockMiddleware1 = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = NextResponse.next();
-        forward(response);
-      },
-    );
-
-    const mockMiddleware2 = jest.fn(
-      // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-      async ({ forward }: MiddlewareFunctionProps) => {
-        const response = new NextResponse('Single middleware');
-        forward(response);
-      },
-    );
-
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [mockMiddleware1],
-      '/page2': mockMiddleware2,
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-
-    // Test for array of middleware functions
-    await middleware(new NextRequest('http://localhost/page1'), mockEvent);
-    expect(mockMiddleware1).toHaveBeenCalled();
-
-    // Test for single middleware function
-    await middleware(new NextRequest('http://localhost/page2'), mockEvent);
-    expect(mockMiddleware2).toHaveBeenCalled();
-  });
-
-  it('chains two middleware functions and checks headers', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          response.headers.set('X-Test-Header', 'TestValue');
-          forward(response);
-        },
-        async ({ response }: MiddlewareFunctionProps) => {
-          const headerValue = response?.headers.get('X-Test-Header');
-          expect(headerValue).toBe('TestValue');
-          return new NextResponse('Headers are equal');
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    const response = await middleware(mockRequest, mockEvent);
-
-    expect(response).toBeInstanceOf(NextResponse);
-    expect(await response?.text()).toBe('Headers are equal');
-  });
-
-  it('sets the response prop correctly for legacy middleware', async () => {
-    const legacyMiddleware: MiddlewareFunction = (_request, _event) => {
-      return new NextResponse('Legacy response');
-    };
-
-    const props: MiddlewareFunctionProps = {
-      request: mockRequest,
-      event: mockEvent,
-      context: mockContext,
-      params: jest.fn(),
-      forward: jest.fn(),
-    };
-
-    await forward(legacyMiddleware, props);
-
-    expect(props.response).toBeInstanceOf(NextResponse);
-    expect(await props.response?.text()).toBe('Legacy response');
-  });
-
-  it('sets the response prop correctly for new middleware', async () => {
-    const newMiddleware: MiddlewareFunction = ({
-      request: _request,
-    }: {
-      request: NextRequest;
-    }) => {
-      return new NextResponse('New response');
-    };
-
-    const props: MiddlewareFunctionProps = {
-      request: mockRequest,
-      event: mockEvent,
-      context: mockContext,
-      params: jest.fn(),
-      forward: jest.fn(),
-    };
-
-    await forward(newMiddleware, props);
-
-    expect(props.response).toBeInstanceOf(NextResponse);
-    expect(await props.response?.text()).toBe('New response');
-  });
-
-  it('response prop is undefined if middleware returns undefined', async () => {
-    const undefinedMiddleware: MiddlewareFunction = () => {
-      return undefined;
-    };
-
-    const props: MiddlewareFunctionProps = {
-      request: mockRequest,
-      event: mockEvent,
-      context: mockContext,
-      params: jest.fn(),
-      forward: jest.fn(),
-    };
-
-    await forward(undefinedMiddleware, props);
-
-    expect(props.response).toBeUndefined();
-  });
-
-  it('handles errors in middleware functions', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        async () => {
-          throw new Error('Test error');
-        },
-      ],
-    };
-
-    const middleware = createMiddleware(middlewareConfig);
-    await expect(middleware(mockRequest, mockEvent)).rejects.toThrow();
-  });
-
-  it('passes context between middleware functions', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        async ({ context }: MiddlewareFunctionProps) => {
-          context.set('testKey', 'testValue');
-        },
-        async ({ context }: MiddlewareFunctionProps) => {
-          expect(context.get('testKey')).toBe('testValue');
+  describe("Middleware Processing", () => {
+    test("should process simple middleware", async () => {
+      const middleware: NextMiddleware = () => {
+        return NextResponse.next({
+          headers: { "x-test": "value" },
+        });
+      };
+
+      const nemo = new NEMO({ "/": middleware });
+      const response = await nemo.middleware(mockRequest(), mockEvent);
+
+      expect(response).toBeDefined();
+      expect(response instanceof NextResponse).toBe(true);
+      expect(response?.headers.get("x-test")).toBe("value");
+    });
+
+    test("should process middleware chain", async () => {
+      const middleware1: NextMiddleware = (req) => {
+        req.headers.set("x-test-1", "value1");
+      };
+
+      const middleware2: NextMiddleware = () => {
+        return NextResponse.next({
+          headers: { "x-test-2": "value2" },
+        });
+      };
+
+      const nemo = new NEMO({ "/": [middleware1, middleware2] });
+      const response = await nemo.middleware(mockRequest(), mockEvent);
+
+      expect(response?.headers.get("x-test-1")).not.toBe("value1");
+      expect(response?.headers.get("x-test-2")).toBe("value2");
+    });
+
+    describe("Chain Breaking", () => {
+      test("should break chain on NextResponse.next()", async () => {
+        const order: string[] = [];
+        const middleware1: NextMiddleware = () => {
+          order.push("first");
           return NextResponse.next();
-        },
-      ],
-    };
+        };
+        const middleware2: NextMiddleware = () => {
+          order.push("second");
+        };
 
-    const middleware = createMiddleware(middlewareConfig);
-    await middleware(mockRequest, mockEvent);
+        const nemo = new NEMO({ "/": [middleware1, middleware2] });
+        await nemo.middleware(mockRequest(), mockEvent);
+
+        expect(order).toEqual(["first"]);
+      });
+
+      test("should break chain on NextResponse.redirect", async () => {
+        const order: string[] = [];
+        const middleware1: NextMiddleware = () => {
+          order.push("first");
+          return NextResponse.redirect("https://example.com");
+        };
+        const middleware2: NextMiddleware = () => {
+          order.push("second");
+        };
+
+        const nemo = new NEMO({ "/": [middleware1, middleware2] });
+        const response = await nemo.middleware(mockRequest(), mockEvent);
+
+        expect(order).toEqual(["first"]);
+        expect(response?.status).toBe(307);
+      });
+
+      test("should break chain on NextResponse.rewrite", async () => {
+        const order: string[] = [];
+        const middleware1: NextMiddleware = () => {
+          order.push("first");
+          return NextResponse.rewrite("https://example.com");
+        };
+        const middleware2: NextMiddleware = () => {
+          order.push("second");
+        };
+
+        const nemo = new NEMO({ "/": [middleware1, middleware2] });
+        await nemo.middleware(mockRequest(), mockEvent);
+
+        expect(order).toEqual(["first"]);
+      });
+    });
   });
 
-  it('handles complex path parameters', async () => {
-    const mockMiddleware = jest.fn(
-      async ({ params }: MiddlewareFunctionProps) => {
-        const parameters = params();
-        expect(parameters.category).toBe('books');
-        expect(parameters.id).toBe('123');
-        expect(parameters.format).toBe('pdf');
-      },
-    );
+  describe("Path Matching", () => {
+    test("should match exact paths", async () => {
+      const middleware = mock(() => NextResponse.next());
+      const nemo = new NEMO({ "/test": middleware });
 
-    const middlewareConfig: MiddlewareConfig = {
-      '/:category/:id.:format': [mockMiddleware],
-    };
+      await nemo.middleware(mockRequest("/test"), mockEvent);
+      expect(middleware).toHaveBeenCalled();
+    });
 
-    const middleware = createMiddleware(middlewareConfig);
-    const request = new NextRequest('http://localhost/books/123.pdf');
-    await middleware(request, mockEvent);
+    test("should match pattern paths", async () => {
+      const middleware = mock(() => NextResponse.next());
+      const nemo = new NEMO({ "/test/:id": middleware });
 
-    expect(mockMiddleware).toHaveBeenCalled();
+      await nemo.middleware(mockRequest("/test/123"), mockEvent);
+      expect(middleware).toHaveBeenCalled();
+    });
+
+    test("should not match invalid paths", async () => {
+      const middleware = mock(() => NextResponse.next());
+      const nemo = new NEMO({ "/test": middleware });
+
+      await nemo.middleware(mockRequest("/other"), mockEvent);
+      expect(middleware).not.toHaveBeenCalled();
+    });
   });
 
-  it('merges headers from multiple middleware functions', async () => {
-    const middlewareConfig: MiddlewareConfig = {
-      '/page1': [
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          response.headers.set('X-Header-1', 'Value1');
-          forward(response);
-        },
-        // eslint-disable-next-line @typescript-eslint/no-shadow -- intentional shadowing
-        async ({ forward }: MiddlewareFunctionProps) => {
-          const response = NextResponse.next();
-          response.headers.set('X-Header-2', 'Value2');
-          forward(response);
-        },
-      ],
-    };
+  describe("Error Handling", () => {
+    test("should provide metadata for errors in before middleware", async () => {
+      const errorMiddleware: NextMiddleware = () => {
+        throw new Error("Test error");
+      };
 
-    const middleware = createMiddleware(middlewareConfig);
-    const response = await middleware(mockRequest, mockEvent);
+      const nemo = new NEMO({ "/": () => {} }, { before: errorMiddleware });
 
-    expect(response?.headers.get('x-middleware-request-x-header-1')).toBe(
-      'Value1',
-    );
-    expect(response?.headers.get('x-middleware-request-x-header-2')).toBe(
-      'Value2',
-    );
+      try {
+        await nemo.middleware(mockRequest(), mockEvent);
+        fail("Expected error to be thrown");
+      } catch (error) {
+        expect(error).toBeInstanceOf(NemoMiddlewareError);
+        const nemoError = error as NemoMiddlewareError;
+        expect(nemoError.metadata.chain).toBe("before");
+        expect(nemoError.metadata.index).toBe(0);
+        expect(nemoError.metadata.pathname).toBe("/");
+        expect(nemoError.metadata.routeKey).toBe("/");
+        expect(nemoError.originalError).toBeInstanceOf(Error);
+      }
+    });
+
+    test("should use custom error handler when provided", async () => {
+      const errorMiddleware: NextMiddleware = () => {
+        throw new Error("Custom error");
+      };
+
+      const errorHandler: ErrorHandler = mock((error, context) => {
+        expect(error.message).toBe("Custom error");
+        expect(context.chain).toBe("main");
+        return NextResponse.next();
+      });
+
+      const nemo = new NEMO({ "/": errorMiddleware }, undefined, {
+        errorHandler,
+      });
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    test("should continue chain when silent mode is enabled", async () => {
+      const errorMiddleware: NextMiddleware = () => {
+        throw new Error("Silent error");
+      };
+
+      const nextMiddleware = mock(() => NextResponse.next());
+
+      const nemo = new NEMO(
+        { "/": [errorMiddleware, nextMiddleware] },
+        undefined,
+        { silent: true },
+      );
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(nextMiddleware).toHaveBeenCalled();
+    });
+  });
+
+  describe("Global Middleware", () => {
+    test("should execute before middleware first", async () => {
+      const order: string[] = [];
+
+      const beforeMiddleware: NextMiddleware = () => {
+        order.push("before");
+        return;
+      };
+
+      const mainMiddleware: NextMiddleware = () => {
+        order.push("main");
+        return NextResponse.next();
+      };
+
+      const nemo = new NEMO(
+        { "/": mainMiddleware },
+        { before: beforeMiddleware },
+      );
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(order).toEqual(["before", "main"]);
+    });
+
+    test("should execute after middleware last", async () => {
+      const order: string[] = [];
+
+      const afterMiddleware: NextMiddleware = () => {
+        order.push("after");
+      };
+
+      const mainMiddleware: NextMiddleware = () => {
+        order.push("main");
+      };
+
+      const nemo = new NEMO(
+        { "/": mainMiddleware },
+        { after: afterMiddleware },
+      );
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(order).toEqual(["main", "after"]);
+    });
+  });
+
+  describe("Deprecated createMiddleware", () => {
+    const originalConsoleWarn = console.warn;
+    let warnSpy: typeof console.warn;
+
+    beforeEach(() => {
+      warnSpy = mock((...args: any[]) => {
+        originalConsoleWarn(...args);
+      });
+      console.warn = warnSpy;
+    });
+
+    afterEach(() => {
+      console.warn = originalConsoleWarn;
+    });
+
+    test("should show deprecation warning", () => {
+      const middleware = mock(() => NextResponse.next());
+      createMiddleware({ "/": middleware });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[NEMO] `createMiddleware` is deprecated. Use `new NEMO()` instead.",
+      );
+    });
+
+    test("should return a working middleware instance", async () => {
+      const testMiddleware = mock(() => NextResponse.next());
+      const { middleware } = createMiddleware({ "/test": testMiddleware });
+
+      await middleware(mockRequest("/test"), mockEvent);
+      expect(testMiddleware).toHaveBeenCalled();
+    });
+  });
+
+  describe("Configuration", () => {
+    test("should apply default config values", () => {
+      const nemo = new NEMO({});
+      expect((nemo as any).config).toEqual({
+        debug: false,
+        silent: false,
+        enableTiming: false,
+      });
+    });
+
+    test("should merge custom config with defaults", () => {
+      const nemo = new NEMO({}, undefined, {
+        debug: true,
+        enableTiming: true,
+      });
+      expect((nemo as any).config).toEqual({
+        debug: true,
+        silent: false,
+        enableTiming: true,
+      });
+    });
+  });
+
+  describe("Timing", () => {
+    test("should track timing when enabled", async () => {
+      const middleware = mock(() => {
+        return NextResponse.next();
+      });
+
+      const nemo = new NEMO({ "/": middleware }, undefined, {
+        debug: true,
+        enableTiming: true,
+      });
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      // Just verify it doesn't throw - actual timing values are non-deterministic
+    });
+
+    test("should track timing for all middleware chains", async () => {
+      const before = mock(() => undefined);
+      const main = mock(() => undefined);
+      const after = mock(() => NextResponse.next());
+
+      const nemo = new NEMO(
+        { "/": main },
+        { before, after },
+        {
+          debug: true,
+          enableTiming: true,
+        },
+      );
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(before).toHaveBeenCalled();
+      expect(main).toHaveBeenCalled();
+      expect(after).toHaveBeenCalled();
+    });
+  });
+
+  describe("Context Management", () => {
+    test("should clear context and cache", () => {
+      const nemo = new NEMO({});
+      (nemo as any).matchCache.set("test", new Map([["path", true]]));
+
+      nemo.clearContext();
+
+      expect((nemo as any).matchCache.size).toBe(0);
+    });
+  });
+
+  describe("Path Matching Cache", () => {
+    test("should cache path matching results", async () => {
+      const middleware = mock(() => NextResponse.next());
+      const nemo = new NEMO({ "/test/:id": middleware });
+
+      // First call - should create cache
+      await nemo.middleware(mockRequest("/test/123"), mockEvent);
+      const cache = (nemo as any).matchCache.get("/test/:id");
+      expect(cache?.get("/test/123")).toBe(true);
+
+      // Second call - should use cache
+      await nemo.middleware(mockRequest("/test/123"), mockEvent);
+      expect(middleware).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("Global Middleware Arrays", () => {
+    test("should handle array of before middlewares", async () => {
+      const order: string[] = [];
+      const before1 = mock(() => {
+        order.push("before1");
+      });
+      const before2 = mock(() => {
+        order.push("before2");
+      });
+      const main = mock(() => {
+        order.push("main");
+        return NextResponse.next();
+      });
+
+      const nemo = new NEMO({ "/": main }, { before: [before1, before2] });
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(order).toEqual(["before1", "before2", "main"]);
+    });
+
+    test("should handle array of after middlewares", async () => {
+      const order: string[] = [];
+      const main = mock(() => {
+        order.push("main");
+      });
+      const after1 = mock(() => {
+        order.push("after1");
+      });
+      const after2 = mock(() => {
+        order.push("after2");
+        return NextResponse.next();
+      });
+
+      const nemo = new NEMO({ "/": main }, { after: [after1, after2] });
+
+      await nemo.middleware(mockRequest(), mockEvent);
+      expect(order).toEqual(["main", "after1", "after2"]);
+    });
   });
 });

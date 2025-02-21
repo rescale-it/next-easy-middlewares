@@ -4,11 +4,9 @@ description: Supercharge your Next.js middleware with NEMO
 icon: Book
 ---
 
+import { SquareFunctionIcon, WrenchIcon } from "lucide-react";
 
-import {SquareFunctionIcon, WrenchIcon} from "lucide-react";
-import {Step, Steps} from 'fumadocs-ui/components/steps';
-
-## Installation
+## Installation & usage
 
 <Steps>
   <Step>
@@ -17,6 +15,7 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
     ```package-install
     @rescale/nemo
     ```
+
   </Step>
   <Step>
     ### Import the package inside middleware.ts file.
@@ -24,10 +23,11 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
     (or create it if you don't have one yet)
 
     ```typescript title="middleware.ts"
-    import { createMiddleware } from '@rescale/nemo';  // [!code ++]
+    import { NEMO } from '@rescale/nemo';  // [!code ++]
 
     // [...]
     ```
+
   </Step>
   <Step>
     ### Use the createMiddleware function to create a middleware helper.
@@ -35,28 +35,29 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
     ```typescript title="middleware.ts"
     import { createMiddleware } from '@rescale/nemo';
 
-    export const middleware = createMiddleware(/* your functions will go here */); // [!code ++]
+    export const { middleware } = new NEMO(); // [!code ++]
 
     // [...]
     ```
+
   </Step>
   <Step>
     ### Define your middlewares config and update the createMiddleware function parameters.
 
     ```typescript title="middleware.ts"
     import { createMiddleware } from '@rescale/nemo'; // [!code --]
-    import { createMiddleware, type MiddlewareFunctionProps } from '@rescale/nemo'; // [!code ++]
+    import { createMiddleware, type MiddlewareConfig } from '@rescale/nemo'; // [!code ++]
 
     const middlewares = { // [!code ++]
       '/': [ // [!code ++]
-        async ({ request }: MiddlewareFunctionProps) => { // [!code ++]
+        async (request) => { // [!code ++]
           console.log('There is NEMO', request.nextUrl.pathname); // [!code ++]
         }, // [!code ++]
       ], // [!code ++]
-    }; // [!code ++]
+    } satisfies MiddlewareConfig; // [!code ++]
 
-    export const middleware = createMiddleware(/* your functions will go here */); // [!code --]
-    export const middleware = createMiddleware(middlewares); // [!code ++]
+    export const { middleware } = new NEMO(); // [!code --]
+    export const { middleware } = new NEMO(middlewares); // [!code ++]
 
     // [...]
     ```
@@ -67,6 +68,7 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
       <Card href="/docs/configuration" title="Configuration" description="Learn more about middlewres configuration" icon={<WrenchIcon/>}/>
       <Card href="/docs/functions" title="Functions" description="Learn more about middlewre functions" icon={<SquareFunctionIcon/>}/>
     </Cards>
+
   </Step>
   <Step>
     ### Optimize your middleware execution to not execute it on every signle request.
@@ -88,22 +90,23 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
     <Callout>
       Reed more about [Next.js middleware configuration](https://nextjs.org/docs/app/file-conventions/middleware#config-object-optional)
     </Callout>
+
   </Step>
   <Step>
     ### Finally, let's put it all together.
 
-    ```typescript title="middleware.ts"
-    import { createMiddleware, type MiddlewareFunctionProps } from '@rescale/nemo';
+    ```typescript twoslash title="middleware.ts"
+    import { NEMO, type MiddlewareConfig } from '@rescale/nemo';
 
     const middlewares = {
       '/': [
-        async ({ request }: MiddlewareFunctionProps) => {
+        async (request) => {
           console.log('There is NEMO', request.nextUrl.pathname);
         },
       ],
-    };
+    } satisfies MiddlewareConfig;
 
-    export const middleware = createMiddleware(middlewares);
+    export const { middleware } = new NEMO(middlewares);
 
     export const config = {
       matcher: ['/((?!_next/|_static|_vercel|[\\w-]+\\.\\w+).*)'],
@@ -111,6 +114,7 @@ import {Step, Steps} from 'fumadocs-ui/components/steps';
     ```
 
     That's how should your `middleware.ts` file looks like after all steps.
+
   </Step>
 </Steps>
 
